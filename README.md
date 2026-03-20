@@ -1,15 +1,16 @@
 # 2D Physics Simulator
 
-A 2D physics simulator built in C++ using SDL3. Simulates ~1000 circular balls bouncing inside a walled container with gravity, ball-ball collisions, and ball-wall collisions.
+A 2D physics simulator built in C++ using SDL3. Simulates ~1000 circular balls bouncing inside a walled container with gravity, impulse-based collisions, and configurable restitution.
 
 ## Features
 
-- **Gravity** — continuous downward acceleration on all balls
-- **Ball-ball collisions** — elastic collision resolution with configurable restitution
-- **Ball-wall collisions** — balls bounce off fixed container walls
-- **Position correction** — prevents overlapping after collisions
-- **Spatial grid** — broad-phase collision detection for performance with 1000 balls
-- **Stability** — velocity clamping, linear damping, multi-iteration solver, and sleep for settled balls
+- **Euler integration** with fixed 1/60s timestep
+- **Impulse-based ball-ball collisions** — velocity only, no position changes
+- **Hard separation pass** — position only, runs once after solver
+- **Wall collisions** — positional clamp with velocity reflection
+- **Damping** — 0.97× per frame
+- **Sleep system** — support-aware (floor or ball below)
+- **Spatial grid** — broad-phase collision detection for 1000 balls
 
 ## Building
 
@@ -20,20 +21,27 @@ make
 ./simulator
 ```
 
+## Controls
+
+- `[` — decrease restitution by 0.05
+- `]` — increase restitution by 0.05
+- Restitution displayed on screen
+
 ## Dependencies
 
 - SDL3
 - CMake 3.16+
 - C++17 compiler
 
-## Configuration
-
-Key constants at the top of `main.cpp`:
+## Parameters
 
 | Constant | Default | Description |
 |---|---|---|
 | `NUM_BALLS` | 1000 | Number of balls |
-| `GRAVITY` | 500 | Gravity acceleration (pixels/s²) |
-| `RESTITUTION` | 0.3 | Bounciness (0 = no bounce, 1 = perfectly elastic) |
-| `SOLVER_ITERATIONS` | 8 | Collision solver passes per frame |
-| `LINEAR_DAMPING` | 0.999 | Velocity damping per frame |
+| `GRAVITY` | 980 | Gravity (px/s²) |
+| `RESTITUTION` | 0.4 | Bounciness (runtime adjustable) |
+| `SOLVER_ITERS` | 8 | Impulse solver iterations per frame |
+| `DAMPING` | 0.97 | Velocity damping per frame |
+| `SLEEP_SPEED` | 3.0 | Speed threshold for sleep (px/s) |
+| `MAX_SPEED` | 2000 | Velocity clamp |
+| `BALL_RADIUS` | 5–8px | Random radius per ball |

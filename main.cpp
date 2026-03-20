@@ -16,8 +16,8 @@ constexpr float BALL_RADIUS_MAX = 5.0f;
 constexpr float MAX_VELOCITY = 1500.0f;
 constexpr float WALL_THICKNESS = 5.0f;
 constexpr int SOLVER_ITERATIONS = 8;
-constexpr float LINEAR_DAMPING = 0.999f;
-constexpr float SLEEP_VELOCITY = 5.0f;
+constexpr float LINEAR_DAMPING = 0.995f;
+constexpr float SLEEP_VELOCITY = 15.0f;
 
 struct Ball {
     float x, y;
@@ -58,6 +58,8 @@ static void resolve_wall_collisions(Ball& ball) {
         ball.y = bottom;
         if (ball.vy > 0) ball.vy *= -RESTITUTION;
     }
+    if (fabsf(ball.vx) < 2.0f) ball.vx = 0;
+    if (fabsf(ball.vy) < 2.0f) ball.vy = 0;
 }
 
 static void resolve_ball_collision(Ball& a, Ball& b) {
@@ -90,7 +92,8 @@ static void resolve_ball_collision(Ball& a, Ball& b) {
     if (rel_vel <= 0)
         return;
 
-    float impulse = (1.0f + RESTITUTION) * rel_vel / total_mass;
+    float e = (rel_vel < 20.0f) ? 0.0f : RESTITUTION;
+    float impulse = (1.0f + e) * rel_vel / total_mass;
 
     a.vx -= impulse * b.mass * nx;
     a.vy -= impulse * b.mass * ny;
@@ -195,6 +198,7 @@ int main(int argc, char* argv[]) {
     bool running = true;
     SDL_Event event;
     Uint64 last_time = SDL_GetTicks();
+    Uint64 start_time = last_time;
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -209,7 +213,9 @@ int main(int argc, char* argv[]) {
         if (dt > 0.02f) dt = 0.02f; // Cap timestep
 
         // --- Physics Update ---
+        bool frozen = ((now - start_time) >= 4000);
 
+        if (!frozen) {
         // Apply gravity and integrate velocity
         for (auto& b : balls) {
             b.vy += GRAVITY * dt;
@@ -241,15 +247,46 @@ int main(int argc, char* argv[]) {
             });
         }
 
-        // Sleep very slow balls resting on the ground
-        for (auto& b : balls) {
+        // Sleep slow balls that have support (floor or ball below)
+        // Reuse the grid already built in the last solver iteration
+        for (int i = 0; i < (int)balls.size(); i++) {
+            Ball& b = balls[i];
             float speed2 = b.vx * b.vx + b.vy * b.vy;
+            if (speed2 >= SLEEP_VELOCITY * SLEEP_VELOCITY) continue;
+
             float bottom = WINDOW_H - WALL_THICKNESS - b.radius;
-            if (speed2 < SLEEP_VELOCITY * SLEEP_VELOCITY && b.y >= bottom - 1.0f) {
+            bool has_support = (b.y >= bottom - 1.0f);
+
+            if (!has_support) {
+                int cx = (int)(b.x / grid.cell_size);
+                int cy = (int)(b.y / grid.cell_size);
+                cx = std::clamp(cx, 0, grid.cols - 1);
+                cy = std::clamp(cy, 0, grid.rows - 1);
+                for (int dy = -1; dy <= 1 && !has_support; dy++) {
+                    for (int dx = -1; dx <= 1 && !has_support; dx++) {
+                        int nx = cx + dx, ny = cy + dy;
+                        if (nx < 0 || nx >= grid.cols || ny < 0 || ny >= grid.rows) continue;
+                        auto& cell = grid.cells[ny * grid.cols + nx];
+                        for (int oidx : cell) {
+                            if (oidx == i) continue;
+                            Ball& other = balls[oidx];
+                            if (other.y <= b.y) continue;
+                            float ddx = b.x - other.x;
+                            float ddy = b.y - other.y;
+                            float d2 = ddx * ddx + ddy * ddy;
+                            float thresh = b.radius + other.radius + 2.0f;
+                            if (d2 < thresh * thresh) { has_support = true; break; }
+                        }
+                    }
+                }
+            }
+
+            if (has_support) {
                 b.vx = 0;
                 b.vy = 0;
             }
         }
+        } // end if (!frozen)
 
         // --- Rendering ---
         SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);

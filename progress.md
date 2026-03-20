@@ -1,37 +1,20 @@
 # Progress
 
-## Completed
+## Current Architecture
+- Euler integration with fixed 1/60s timestep
+- Combined impulse + position solver (5 iterations, grid rebuilt each)
+- Support-aware sleep system (sleeping balls skip gravity/integration)
+- Wake-on-impact for sleeping balls
+- Spatial grid collision detection (cell_size = 2 * max_radius)
+- Baumgarte-style position correction with wall clamp per iteration
 
-### Initial Setup
-- SDL3 window and renderer scaffolding (pre-existing)
-- Installed SDL3 and CMake via Homebrew
-- Verified base project compiles and runs
+## Parameters
+- GRAVITY=980, DAMPING=0.96, SLEEP_SPEED=15
+- RESTIT_CUTOFF=5.0, RESTITUTION=0.3 (adjustable)
+- 1000 balls, radius 5-8px
 
-### Core Physics Implementation
-- Ball struct with position, velocity, radius, mass, and color
-- Gravity integration with fixed timestep cap (0.02s max)
-- Linear velocity damping (0.999 per frame)
-- Velocity clamping (max 1500 px/s) to prevent instability
-
-### Collision Detection & Resolution
-- Ball-wall collisions with position correction and restitution
-- Ball-ball collisions with impulse-based resolution and position correction weighted by inverse mass
-- Spatial grid broad-phase for O(n) average-case collision detection
-- Multi-iteration solver (8 passes) for stable stacking
-
-### Rendering
-- Filled circle drawing via midpoint rasterization
-- Randomized ball colors for visual clarity
-- Gray wall boundaries
-- Dark background
-
-### Stability
-- Sleep system: balls at rest on the floor with near-zero velocity are frozen
-- Overlap resolution via position correction in collision response
-- Multiple solver iterations prevent tunneling and jitter
-
-## Known Issues
-- None currently observed
-
-## Failed Approaches
-- None so far
+## Measurements
+- 5 solver iters + grid rebuild: MAX_PEN ~7.0, 500+ sleeping after 10s
+- More iterations reduce overlap but increase frame time
+- 100 iterations on stale grid: MAX_PEN ~1.0 but slow
+- 150 iterations on stale grid: MAX_PEN ~0.44 (passes <0.5 threshold) but very slow
