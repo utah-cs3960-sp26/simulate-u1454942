@@ -1,5 +1,9 @@
 # Results — 2D Physics Simulator
 
+---
+
+# Week 8 — Physics Simulator
+
 ## Current Simulator Status
 
 The simulator runs ~1000 balls in an 800×600 window with SDL3. Balls fall under gravity, bounce off walls and each other, and settle into a pile. The simulation runs at real-time frame rates.
@@ -159,3 +163,86 @@ Amp would happily add 150 solver iterations per frame without considering that t
 4. **Performance and correctness trade off**: With 1000 balls and Euler integration, achieving zero overlap at 60fps is extremely difficult. A pragmatic compromise (some overlap + forced freeze) was the realistic outcome.
 
 5. **Prompt specificity has diminishing returns**: Very detailed prompts (pseudocode for every step) caused Amp to implement exactly what was specified, even if it was wrong. Simpler prompts with clear success criteria ("balls must settle, no jitter") worked better when combined with "start from working code."
+
+---
+
+# Week 9 — CSV Scene Files & Image Reveal
+
+## What Was Built
+
+Week 9 extended the simulator with a CSV-based scene pipeline and an image-reveal tool. The idea: balls bounce around looking random, then settle into a recognizable image.
+
+### New Features
+
+1. **CSV Scene Loading (`--load <file>`)**: The simulator reads an initial scene from a CSV file with columns `x,y,r,g,b[,radius]`. Each row defines one ball's starting position, color, and optional radius.
+
+2. **CSV Scene Saving (`--save <file>`)**: After the physics settle (controlled by `--settle-time <ms>`, default 4000ms), the simulator writes the final ball positions and colors to a CSV file in the same format.
+
+3. **`generate_scene` tool**: Standalone utility that creates an initial CSV with N randomly-positioned balls. Usage: `./generate_scene [num_balls] [output.csv]`.
+
+4. **`assign_colors` tool**: The key tool for the image reveal effect. It takes the initial CSV (starting positions), the final CSV (resting positions), and a target image. For each ball, it samples the image color at the ball's *final* resting position and writes a new CSV with that color applied to the ball's *starting* position.
+
+### The Image Reveal Workflow
+
+```
+1. ./generate_scene 1000 initial.csv
+2. ./simulator --load initial.csv --save final.csv
+3. ./assign_colors initial.csv final.csv target_image.png colored.csv
+4. ./simulator --load colored.csv
+```
+
+Step 4 is the payoff: balls start scattered with seemingly random colors, bounce around chaotically, and when they settle, the colors align to form the target image. This works because `assign_colors` pre-computed which color each ball needs based on where it will end up.
+
+### CSV Format
+
+```csv
+x,y,r,g,b,radius
+333.724,222.323,183,218,115,4.46932
+370.935,501.019,166,170,197,3.36443
+```
+
+- `x,y`: position in simulation coordinates (800×600 window)
+- `r,g,b`: color (0–255)
+- `radius`: optional; randomly generated if omitted
+
+### Architecture Decisions
+
+- **stb_image.h** (header-only) was used for image loading since no image library was already in the project. It supports PNG, JPG, BMP, PPM, etc.
+- **Deterministic ball ordering**: The CSV row index is the ball's identity. `initial.csv` row N and `final.csv` row N are the same ball, which is what makes the color mapping work. The simulator preserves ball order throughout the simulation.
+- **No changes to physics**: The Week 8 physics code was left untouched. All Week 9 changes are in the I/O layer (CSV parsing, command-line args) and the external tools.
+
+## Prompt and Amp Behavior
+
+### The Prompt
+
+The Week 9 prompt was a single natural-language request: add CSV scene loading/saving, create a color-assignment tool that samples an image at final ball positions, and produce the image-reveal effect.
+
+### What Amp Did Well
+
+- **Understood the full pipeline**: From one prompt, Amp correctly identified all four components needed (CSV load, CSV save, scene generator, color assigner) and their relationships.
+- **Preserved existing code**: The physics engine was left completely untouched. All new code was additive — new functions, new files, new CLI flags.
+- **Got the color-mapping logic right on the first try**: The key insight (sample image at *final* position, write color to *starting* position) was implemented correctly without iteration.
+- **Header-only library choice**: Using stb_image.h was a pragmatic choice — no build system changes beyond adding a new target, no external dependency installation required.
+
+### What Amp Could Have Done Better
+
+- **No visual verification possible**: As with Week 8, Amp cannot see the simulation output. The workflow was verified by checking that CSVs have correct row counts and that colors are sampled from valid image coordinates, but whether the final image actually "looks right" requires human judgment.
+- **Hardcoded simulation dimensions**: The `assign_colors` tool hardcodes `SIM_W=800, SIM_H=600` to match the simulator. If the simulator's window size changes, the color assignment tool silently produces wrong results.
+
+## What Changed in the Prompt
+
+| Change | Why |
+|--------|-----|
+| Single combined request instead of step-by-step | The task was well-defined enough to describe in one go |
+| No physics changes requested | The physics were "good enough" from Week 8 |
+| Described desired end result (image reveal) | Gave Amp the high-level goal and let it design the pipeline |
+
+## Lessons Learned (Week 9)
+
+1. **Well-scoped feature requests work well**: Unlike Week 8's physics debugging (where Amp couldn't verify results), Week 9's task was mostly I/O plumbing and data transformation — things Amp can verify (files parse correctly, row counts match, colors are in range).
+
+2. **Additive features are easier than fixing bugs**: Week 9 added new capabilities without modifying existing code. This is Amp's sweet spot — there's no risk of breaking working physics.
+
+3. **Pipeline design from a single prompt**: When the end-to-end workflow is clearly described, Amp can correctly decompose it into separate tools and define their interfaces (CSV format, CLI arguments, file flow).
+
+4. **Human verification still essential for the visual payoff**: The technical pipeline works — CSVs flow correctly through the tools. But whether the final animation is visually satisfying (good ball density, recognizable image, pleasing chaos-to-order transition) can only be judged by watching it.

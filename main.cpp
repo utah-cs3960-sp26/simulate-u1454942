@@ -4,6 +4,10 @@
 #include <cstdlib>
 #include <ctime>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cstring>
 
 // --- Configuration ---
 constexpr int WINDOW_W = 800;
@@ -26,6 +30,62 @@ struct Ball {
     float mass;
     Uint8 r, g, b;
 };
+
+static bool load_scene_csv(const char* path, std::vector<Ball>& balls) {
+    std::ifstream file(path);
+    if (!file.is_open()) return false;
+
+    balls.clear();
+    std::string line;
+    // Skip header
+    std::getline(file, line);
+
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        std::istringstream ss(line);
+        std::string token;
+        Ball b{};
+        b.vx = 0; b.vy = 0;
+
+        // x,y,r,g,b[,radius]
+        if (!std::getline(ss, token, ',')) continue;
+        b.x = std::stof(token);
+        if (!std::getline(ss, token, ',')) continue;
+        b.y = std::stof(token);
+        if (!std::getline(ss, token, ',')) continue;
+        b.r = (Uint8)std::stoi(token);
+        if (!std::getline(ss, token, ',')) continue;
+        b.g = (Uint8)std::stoi(token);
+        if (!std::getline(ss, token, ',')) continue;
+        b.b = (Uint8)std::stoi(token);
+
+        // Optional radius column
+        if (std::getline(ss, token, ',') && !token.empty()) {
+            b.radius = std::stof(token);
+        } else {
+            b.radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
+        }
+        b.mass = b.radius * b.radius;
+
+        balls.push_back(b);
+    }
+    return !balls.empty();
+}
+
+static void save_scene_csv(const char* path, const std::vector<Ball>& balls) {
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        SDL_Log("Failed to open %s for writing", path);
+        return;
+    }
+    file << "x,y,r,g,b,radius\n";
+    for (auto& b : balls) {
+        file << b.x << "," << b.y << ","
+             << (int)b.r << "," << (int)b.g << "," << (int)b.b << ","
+             << b.radius << "\n";
+    }
+    SDL_Log("Saved %zu balls to %s", balls.size(), path);
+}
 
 static void clamp_velocity(Ball& ball) {
     float speed2 = ball.vx * ball.vx + ball.vy * ball.vy;
@@ -161,7 +221,31 @@ static void draw_filled_circle(SDL_Renderer* renderer, float cx, float cy, float
     }
 }
 
+static void print_usage(const char* prog) {
+    SDL_Log("Usage: %s [--load <scene.csv>] [--save <output.csv>] [--settle-time <ms>]", prog);
+    SDL_Log("  --load <file>       Load initial scene from CSV (x,y,r,g,b[,radius])");
+    SDL_Log("  --save <file>       Save final positions to CSV on quit");
+    SDL_Log("  --settle-time <ms>  Time in ms before freezing physics (default: 4000)");
+}
+
 int main(int argc, char* argv[]) {
+    const char* load_path = nullptr;
+    const char* save_path = nullptr;
+    Uint64 settle_time_ms = 4000;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--load") == 0 && i + 1 < argc) {
+            load_path = argv[++i];
+        } else if (strcmp(argv[i], "--save") == 0 && i + 1 < argc) {
+            save_path = argv[++i];
+        } else if (strcmp(argv[i], "--settle-time") == 0 && i + 1 < argc) {
+            settle_time_ms = (Uint64)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+    }
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         return 1;
     }
@@ -179,26 +263,42 @@ int main(int argc, char* argv[]) {
 
     // Initialize balls
     srand((unsigned)time(nullptr));
-    std::vector<Ball> balls(NUM_BALLS);
-    for (auto& b : balls) {
-        b.radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
-        b.mass = b.radius * b.radius; // mass proportional to area
-        b.x = WALL_THICKNESS + b.radius + ((float)rand() / RAND_MAX) * (WINDOW_W - 2 * WALL_THICKNESS - 2 * b.radius);
-        b.y = WALL_THICKNESS + b.radius + ((float)rand() / RAND_MAX) * (WINDOW_H - 2 * WALL_THICKNESS - 2 * b.radius);
-        b.vx = ((float)rand() / RAND_MAX - 0.5f) * 200.0f;
-        b.vy = ((float)rand() / RAND_MAX - 0.5f) * 200.0f;
-        b.r = 100 + rand() % 156;
-        b.g = 100 + rand() % 156;
-        b.b = 100 + rand() % 156;
+    std::vector<Ball> balls;
+
+    if (load_path) {
+        if (!load_scene_csv(load_path, balls)) {
+            SDL_Log("Failed to load scene from %s, using random balls", load_path);
+            load_path = nullptr;
+        } else {
+            SDL_Log("Loaded %zu balls from %s", balls.size(), load_path);
+        }
+    }
+
+    if (!load_path) {
+        balls.resize(NUM_BALLS);
+        for (auto& b : balls) {
+            b.radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
+            b.mass = b.radius * b.radius;
+            b.x = WALL_THICKNESS + b.radius + ((float)rand() / RAND_MAX) * (WINDOW_W - 2 * WALL_THICKNESS - 2 * b.radius);
+            b.y = WALL_THICKNESS + b.radius + ((float)rand() / RAND_MAX) * (WINDOW_H - 2 * WALL_THICKNESS - 2 * b.radius);
+            b.vx = ((float)rand() / RAND_MAX - 0.5f) * 200.0f;
+            b.vy = ((float)rand() / RAND_MAX - 0.5f) * 200.0f;
+            b.r = 100 + rand() % 156;
+            b.g = 100 + rand() % 156;
+            b.b = 100 + rand() % 156;
+        }
     }
 
     Grid grid;
-    grid.init(BALL_RADIUS_MAX);
+    float max_r = BALL_RADIUS_MAX;
+    for (auto& b : balls) max_r = std::max(max_r, b.radius);
+    grid.init(max_r);
 
     bool running = true;
     SDL_Event event;
     Uint64 last_time = SDL_GetTicks();
     Uint64 start_time = last_time;
+    bool saved = false;
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -213,7 +313,12 @@ int main(int argc, char* argv[]) {
         if (dt > 0.02f) dt = 0.02f; // Cap timestep
 
         // --- Physics Update ---
-        bool frozen = ((now - start_time) >= 4000);
+        bool frozen = ((now - start_time) >= settle_time_ms);
+
+        if (frozen && save_path && !saved) {
+            save_scene_csv(save_path, balls);
+            saved = true;
+        }
 
         if (!frozen) {
         // Apply gravity and integrate velocity
@@ -248,7 +353,6 @@ int main(int argc, char* argv[]) {
         }
 
         // Sleep slow balls that have support (floor or ball below)
-        // Reuse the grid already built in the last solver iteration
         for (int i = 0; i < (int)balls.size(); i++) {
             Ball& b = balls[i];
             float speed2 = b.vx * b.vx + b.vy * b.vy;
@@ -311,6 +415,11 @@ int main(int argc, char* argv[]) {
         }
 
         SDL_RenderPresent(renderer);
+    }
+
+    // Save on exit if not already saved
+    if (save_path && !saved) {
+        save_scene_csv(save_path, balls);
     }
 
     SDL_DestroyRenderer(renderer);
