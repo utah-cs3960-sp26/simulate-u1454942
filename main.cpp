@@ -1,4 +1,5 @@
 #include <SDL3/SDL.h>
+#include <box2d/box2d.h>
 #include <vector>
 #include <cmath>
 #include <cstdlib>
@@ -13,61 +14,77 @@
 constexpr int WINDOW_W = 800;
 constexpr int WINDOW_H = 600;
 constexpr int NUM_BALLS = 1000;
-constexpr float GRAVITY = 500.0f;
 constexpr float RESTITUTION = 0.3f;
 constexpr float BALL_RADIUS_MIN = 3.0f;
 constexpr float BALL_RADIUS_MAX = 5.0f;
-constexpr float MAX_VELOCITY = 1500.0f;
 constexpr float WALL_THICKNESS = 5.0f;
-constexpr int SOLVER_ITERATIONS = 8;
-constexpr float LINEAR_DAMPING = 0.995f;
-constexpr float SLEEP_VELOCITY = 15.0f;
+
+// Box2D uses meters; we define a pixels-per-meter scale
+constexpr float PPM = 50.0f;
+
+// Fixed timestep for Box2D
+constexpr float FIXED_DT = 1.0f / 60.0f;
+constexpr int SUB_STEPS = 4;
 
 struct Ball {
-    float x, y;
-    float vx, vy;
-    float radius;
-    float mass;
+    float radius;   // in pixels
     Uint8 r, g, b;
+    b2BodyId bodyId;
 };
 
-static bool load_scene_csv(const char* path, std::vector<Ball>& balls) {
+static bool load_scene_csv(const char* path, std::vector<Ball>& balls,
+                           b2WorldId worldId, float restitution) {
     std::ifstream file(path);
     if (!file.is_open()) return false;
 
     balls.clear();
     std::string line;
-    // Skip header
-    std::getline(file, line);
+    std::getline(file, line); // skip header
 
     while (std::getline(file, line)) {
         if (line.empty()) continue;
         std::istringstream ss(line);
         std::string token;
-        Ball b{};
-        b.vx = 0; b.vy = 0;
 
-        // x,y,r,g,b[,radius]
-        if (!std::getline(ss, token, ',')) continue;
-        b.x = std::stof(token);
-        if (!std::getline(ss, token, ',')) continue;
-        b.y = std::stof(token);
-        if (!std::getline(ss, token, ',')) continue;
-        b.r = (Uint8)std::stoi(token);
-        if (!std::getline(ss, token, ',')) continue;
-        b.g = (Uint8)std::stoi(token);
-        if (!std::getline(ss, token, ',')) continue;
-        b.b = (Uint8)std::stoi(token);
+        float x = 0, y = 0;
+        Uint8 cr = 200, cg = 200, cb = 200;
+        float radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
 
-        // Optional radius column
+        if (!std::getline(ss, token, ',')) continue;
+        x = std::stof(token);
+        if (!std::getline(ss, token, ',')) continue;
+        y = std::stof(token);
+        if (!std::getline(ss, token, ',')) continue;
+        cr = (Uint8)std::stoi(token);
+        if (!std::getline(ss, token, ',')) continue;
+        cg = (Uint8)std::stoi(token);
+        if (!std::getline(ss, token, ',')) continue;
+        cb = (Uint8)std::stoi(token);
         if (std::getline(ss, token, ',') && !token.empty()) {
-            b.radius = std::stof(token);
-        } else {
-            b.radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
+            radius = std::stof(token);
         }
-        b.mass = b.radius * b.radius;
 
-        balls.push_back(b);
+        // Create Box2D body
+        b2BodyDef bodyDef = b2DefaultBodyDef();
+        bodyDef.type = b2_dynamicBody;
+        bodyDef.position = {x / PPM, y / PPM};
+        bodyDef.linearDamping = 0.5f;
+        b2BodyId bodyId = b2CreateBody(worldId, &bodyDef);
+
+        b2ShapeDef shapeDef = b2DefaultShapeDef();
+        shapeDef.density = 1.0f;
+        shapeDef.material.friction = 0.3f;
+        shapeDef.material.restitution = restitution;
+        b2Circle circle = {{0.0f, 0.0f}, radius / PPM};
+        b2CreateCircleShape(bodyId, &shapeDef, &circle);
+
+        Ball ball;
+        ball.radius = radius;
+        ball.r = cr;
+        ball.g = cg;
+        ball.b = cb;
+        ball.bodyId = bodyId;
+        balls.push_back(ball);
     }
     return !balls.empty();
 }
@@ -80,140 +97,17 @@ static void save_scene_csv(const char* path, const std::vector<Ball>& balls) {
     }
     file << "x,y,r,g,b,radius\n";
     for (auto& b : balls) {
-        file << b.x << "," << b.y << ","
+        b2Vec2 pos = b2Body_GetPosition(b.bodyId);
+        float px = pos.x * PPM;
+        float py = pos.y * PPM;
+        file << px << "," << py << ","
              << (int)b.r << "," << (int)b.g << "," << (int)b.b << ","
              << b.radius << "\n";
     }
     SDL_Log("Saved %zu balls to %s", balls.size(), path);
 }
 
-static void clamp_velocity(Ball& ball) {
-    float speed2 = ball.vx * ball.vx + ball.vy * ball.vy;
-    if (speed2 > MAX_VELOCITY * MAX_VELOCITY) {
-        float speed = sqrtf(speed2);
-        ball.vx = ball.vx / speed * MAX_VELOCITY;
-        ball.vy = ball.vy / speed * MAX_VELOCITY;
-    }
-}
-
-static void resolve_wall_collisions(Ball& ball) {
-    float left = WALL_THICKNESS + ball.radius;
-    float right = WINDOW_W - WALL_THICKNESS - ball.radius;
-    float top = WALL_THICKNESS + ball.radius;
-    float bottom = WINDOW_H - WALL_THICKNESS - ball.radius;
-
-    if (ball.x < left) {
-        ball.x = left;
-        if (ball.vx < 0) ball.vx *= -RESTITUTION;
-    }
-    if (ball.x > right) {
-        ball.x = right;
-        if (ball.vx > 0) ball.vx *= -RESTITUTION;
-    }
-    if (ball.y < top) {
-        ball.y = top;
-        if (ball.vy < 0) ball.vy *= -RESTITUTION;
-    }
-    if (ball.y > bottom) {
-        ball.y = bottom;
-        if (ball.vy > 0) ball.vy *= -RESTITUTION;
-    }
-    if (fabsf(ball.vx) < 2.0f) ball.vx = 0;
-    if (fabsf(ball.vy) < 2.0f) ball.vy = 0;
-}
-
-static void resolve_ball_collision(Ball& a, Ball& b) {
-    float dx = b.x - a.x;
-    float dy = b.y - a.y;
-    float dist2 = dx * dx + dy * dy;
-    float min_dist = a.radius + b.radius;
-
-    if (dist2 >= min_dist * min_dist || dist2 < 1e-8f)
-        return;
-
-    float dist = sqrtf(dist2);
-    float nx = dx / dist;
-    float ny = dy / dist;
-
-    // Position correction - push apart equally weighted by inverse mass
-    float overlap = min_dist - dist;
-    float total_mass = a.mass + b.mass;
-    a.x -= nx * overlap * (b.mass / total_mass);
-    a.y -= ny * overlap * (b.mass / total_mass);
-    b.x += nx * overlap * (a.mass / total_mass);
-    b.y += ny * overlap * (a.mass / total_mass);
-
-    // Relative velocity along collision normal
-    float dvx = a.vx - b.vx;
-    float dvy = a.vy - b.vy;
-    float rel_vel = dvx * nx + dvy * ny;
-
-    // Only resolve if balls are moving toward each other
-    if (rel_vel <= 0)
-        return;
-
-    float e = (rel_vel < 20.0f) ? 0.0f : RESTITUTION;
-    float impulse = (1.0f + e) * rel_vel / total_mass;
-
-    a.vx -= impulse * b.mass * nx;
-    a.vy -= impulse * b.mass * ny;
-    b.vx += impulse * a.mass * nx;
-    b.vy += impulse * a.mass * ny;
-}
-
-// Simple spatial grid for broad-phase collision detection
-struct Grid {
-    int cols, rows;
-    float cell_size;
-    std::vector<std::vector<int>> cells;
-
-    void init(float max_radius) {
-        cell_size = max_radius * 2.0f * 2.0f; // 4x max radius
-        cols = (int)ceilf(WINDOW_W / cell_size) + 1;
-        rows = (int)ceilf(WINDOW_H / cell_size) + 1;
-        cells.resize(cols * rows);
-    }
-
-    void clear() {
-        for (auto& c : cells) c.clear();
-    }
-
-    void insert(int idx, float x, float y) {
-        int cx = (int)(x / cell_size);
-        int cy = (int)(y / cell_size);
-        cx = std::clamp(cx, 0, cols - 1);
-        cy = std::clamp(cy, 0, rows - 1);
-        cells[cy * cols + cx].push_back(idx);
-    }
-
-    // Call func(i, j) for each potential pair
-    template<typename F>
-    void for_each_pair(F func) {
-        for (int cy = 0; cy < rows; cy++) {
-            for (int cx = 0; cx < cols; cx++) {
-                auto& cell = cells[cy * cols + cx];
-                // Pairs within the same cell
-                for (size_t i = 0; i < cell.size(); i++)
-                    for (size_t j = i + 1; j < cell.size(); j++)
-                        func(cell[i], cell[j]);
-
-                // Pairs with neighboring cells (right, below, below-right, below-left)
-                int neighbors[4][2] = {{1,0},{0,1},{1,1},{-1,1}};
-                for (auto& n : neighbors) {
-                    int nx = cx + n[0], ny = cy + n[1];
-                    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
-                    auto& ncell = cells[ny * cols + nx];
-                    for (int a : cell)
-                        for (int b : ncell)
-                            func(a, b);
-                }
-            }
-        }
-    }
-};
-
 static void draw_filled_circle(SDL_Renderer* renderer, float cx, float cy, float r) {
-    // Midpoint circle rasterization
     int ir = (int)r;
     for (int dy = -ir; dy <= ir; dy++) {
         int dx = (int)sqrtf((float)(ir * ir - dy * dy));
@@ -221,17 +115,46 @@ static void draw_filled_circle(SDL_Renderer* renderer, float cx, float cy, float
     }
 }
 
+static void create_walls(b2WorldId worldId) {
+    b2BodyDef wallBodyDef = b2DefaultBodyDef();
+    wallBodyDef.type = b2_staticBody;
+    b2BodyId wallBody = b2CreateBody(worldId, &wallBodyDef);
+
+    b2ShapeDef wallShapeDef = b2DefaultShapeDef();
+    wallShapeDef.material.friction = 0.3f;
+    wallShapeDef.material.restitution = 0.2f;
+
+    float t = WALL_THICKNESS / PPM;
+    float w = (float)WINDOW_W / PPM;
+    float h = (float)WINDOW_H / PPM;
+
+    // Walls at inner edges of the visible wall thickness
+    b2Segment bottom = {{t, h - t}, {w - t, h - t}};
+    b2CreateSegmentShape(wallBody, &wallShapeDef, &bottom);
+
+    b2Segment top = {{t, t}, {w - t, t}};
+    b2CreateSegmentShape(wallBody, &wallShapeDef, &top);
+
+    b2Segment left = {{t, t}, {t, h - t}};
+    b2CreateSegmentShape(wallBody, &wallShapeDef, &left);
+
+    b2Segment right = {{w - t, t}, {w - t, h - t}};
+    b2CreateSegmentShape(wallBody, &wallShapeDef, &right);
+}
+
 static void print_usage(const char* prog) {
-    SDL_Log("Usage: %s [--load <scene.csv>] [--save <output.csv>] [--settle-time <ms>]", prog);
-    SDL_Log("  --load <file>       Load initial scene from CSV (x,y,r,g,b[,radius])");
-    SDL_Log("  --save <file>       Save final positions to CSV on quit");
-    SDL_Log("  --settle-time <ms>  Time in ms before freezing physics (default: 4000)");
+    SDL_Log("Usage: %s [--load <scene.csv>] [--save <output.csv>] [--settle-time <ms>] [--restitution <0-1>]", prog);
+    SDL_Log("  --load <file>         Load initial scene from CSV");
+    SDL_Log("  --save <file>         Save final positions to CSV on quit");
+    SDL_Log("  --settle-time <ms>    Time in ms before saving (default: 8000)");
+    SDL_Log("  --restitution <val>   Bounce coefficient 0-1 (default: 0.3)");
 }
 
 int main(int argc, char* argv[]) {
     const char* load_path = nullptr;
     const char* save_path = nullptr;
-    Uint64 settle_time_ms = 4000;
+    Uint64 settle_time_ms = 8000;
+    float restitution = RESTITUTION;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--load") == 0 && i + 1 < argc) {
@@ -240,6 +163,8 @@ int main(int argc, char* argv[]) {
             save_path = argv[++i];
         } else if (strcmp(argv[i], "--settle-time") == 0 && i + 1 < argc) {
             settle_time_ms = (Uint64)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--restitution") == 0 && i + 1 < argc) {
+            restitution = (float)atof(argv[++i]);
         } else if (strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -250,7 +175,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    SDL_Window* window = SDL_CreateWindow("2D Physics Simulator", WINDOW_W, WINDOW_H, 0);
+    SDL_Window* window = SDL_CreateWindow("2D Physics Simulator (Box2D)", WINDOW_W, WINDOW_H, 0);
     if (!window) {
         return 1;
     }
@@ -261,12 +186,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Create Box2D world with gravity
+    b2WorldDef worldDef = b2DefaultWorldDef();
+    worldDef.gravity = {0.0f, 10.0f}; // downward in screen coords (y-down)
+    b2WorldId worldId = b2CreateWorld(&worldDef);
+
+    // Create container walls
+    create_walls(worldId);
+
     // Initialize balls
     srand((unsigned)time(nullptr));
     std::vector<Ball> balls;
 
     if (load_path) {
-        if (!load_scene_csv(load_path, balls)) {
+        if (!load_scene_csv(load_path, balls, worldId, restitution)) {
             SDL_Log("Failed to load scene from %s, using random balls", load_path);
             load_path = nullptr;
         } else {
@@ -275,30 +208,41 @@ int main(int argc, char* argv[]) {
     }
 
     if (!load_path) {
-        balls.resize(NUM_BALLS);
-        for (auto& b : balls) {
-            b.radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
-            b.mass = b.radius * b.radius;
-            b.x = WALL_THICKNESS + b.radius + ((float)rand() / RAND_MAX) * (WINDOW_W - 2 * WALL_THICKNESS - 2 * b.radius);
-            b.y = WALL_THICKNESS + b.radius + ((float)rand() / RAND_MAX) * (WINDOW_H - 2 * WALL_THICKNESS - 2 * b.radius);
-            b.vx = ((float)rand() / RAND_MAX - 0.5f) * 200.0f;
-            b.vy = ((float)rand() / RAND_MAX - 0.5f) * 200.0f;
-            b.r = 100 + rand() % 156;
-            b.g = 100 + rand() % 156;
-            b.b = 100 + rand() % 156;
+        balls.reserve(NUM_BALLS);
+        for (int i = 0; i < NUM_BALLS; i++) {
+            float radius = BALL_RADIUS_MIN + ((float)rand() / RAND_MAX) * (BALL_RADIUS_MAX - BALL_RADIUS_MIN);
+            float x = WALL_THICKNESS + radius + ((float)rand() / RAND_MAX) * (WINDOW_W - 2 * WALL_THICKNESS - 2 * radius);
+            float y = WALL_THICKNESS + radius + ((float)rand() / RAND_MAX) * (WINDOW_H - 2 * WALL_THICKNESS - 2 * radius);
+
+            b2BodyDef bodyDef = b2DefaultBodyDef();
+            bodyDef.type = b2_dynamicBody;
+            bodyDef.position = {x / PPM, y / PPM};
+            bodyDef.linearDamping = 0.5f;
+            b2BodyId bodyId = b2CreateBody(worldId, &bodyDef);
+
+            b2ShapeDef shapeDef = b2DefaultShapeDef();
+            shapeDef.density = 1.0f;
+            shapeDef.material.friction = 0.3f;
+            shapeDef.material.restitution = restitution;
+            b2Circle circle = {{0.0f, 0.0f}, radius / PPM};
+            b2CreateCircleShape(bodyId, &shapeDef, &circle);
+
+            Ball ball;
+            ball.radius = radius;
+            ball.r = (Uint8)(100 + rand() % 156);
+            ball.g = (Uint8)(100 + rand() % 156);
+            ball.b = (Uint8)(100 + rand() % 156);
+            ball.bodyId = bodyId;
+            balls.push_back(ball);
         }
     }
-
-    Grid grid;
-    float max_r = BALL_RADIUS_MAX;
-    for (auto& b : balls) max_r = std::max(max_r, b.radius);
-    grid.init(max_r);
 
     bool running = true;
     SDL_Event event;
     Uint64 last_time = SDL_GetTicks();
     Uint64 start_time = last_time;
     bool saved = false;
+    float accumulator = 0.0f;
 
     while (running) {
         while (SDL_PollEvent(&event)) {
@@ -308,11 +252,10 @@ int main(int argc, char* argv[]) {
         }
 
         Uint64 now = SDL_GetTicks();
-        float dt = (float)(now - last_time) / 1000.0f;
+        float frame_dt = (float)(now - last_time) / 1000.0f;
         last_time = now;
-        if (dt > 0.02f) dt = 0.02f; // Cap timestep
+        if (frame_dt > 0.1f) frame_dt = 0.1f; // cap
 
-        // --- Physics Update ---
         bool frozen = ((now - start_time) >= settle_time_ms);
 
         if (frozen && save_path && !saved) {
@@ -321,76 +264,12 @@ int main(int argc, char* argv[]) {
         }
 
         if (!frozen) {
-        // Apply gravity and integrate velocity
-        for (auto& b : balls) {
-            b.vy += GRAVITY * dt;
-            b.vx *= LINEAR_DAMPING;
-            b.vy *= LINEAR_DAMPING;
-            clamp_velocity(b);
-        }
-
-        // Integrate position
-        for (auto& b : balls) {
-            b.x += b.vx * dt;
-            b.y += b.vy * dt;
-        }
-
-        // Resolve collisions with multiple iterations for stability
-        for (int iter = 0; iter < SOLVER_ITERATIONS; iter++) {
-            // Wall collisions
-            for (auto& b : balls) {
-                resolve_wall_collisions(b);
-            }
-
-            // Ball-ball collisions via spatial grid
-            grid.clear();
-            for (int i = 0; i < (int)balls.size(); i++) {
-                grid.insert(i, balls[i].x, balls[i].y);
-            }
-            grid.for_each_pair([&](int i, int j) {
-                resolve_ball_collision(balls[i], balls[j]);
-            });
-        }
-
-        // Sleep slow balls that have support (floor or ball below)
-        for (int i = 0; i < (int)balls.size(); i++) {
-            Ball& b = balls[i];
-            float speed2 = b.vx * b.vx + b.vy * b.vy;
-            if (speed2 >= SLEEP_VELOCITY * SLEEP_VELOCITY) continue;
-
-            float bottom = WINDOW_H - WALL_THICKNESS - b.radius;
-            bool has_support = (b.y >= bottom - 1.0f);
-
-            if (!has_support) {
-                int cx = (int)(b.x / grid.cell_size);
-                int cy = (int)(b.y / grid.cell_size);
-                cx = std::clamp(cx, 0, grid.cols - 1);
-                cy = std::clamp(cy, 0, grid.rows - 1);
-                for (int dy = -1; dy <= 1 && !has_support; dy++) {
-                    for (int dx = -1; dx <= 1 && !has_support; dx++) {
-                        int nx = cx + dx, ny = cy + dy;
-                        if (nx < 0 || nx >= grid.cols || ny < 0 || ny >= grid.rows) continue;
-                        auto& cell = grid.cells[ny * grid.cols + nx];
-                        for (int oidx : cell) {
-                            if (oidx == i) continue;
-                            Ball& other = balls[oidx];
-                            if (other.y <= b.y) continue;
-                            float ddx = b.x - other.x;
-                            float ddy = b.y - other.y;
-                            float d2 = ddx * ddx + ddy * ddy;
-                            float thresh = b.radius + other.radius + 2.0f;
-                            if (d2 < thresh * thresh) { has_support = true; break; }
-                        }
-                    }
-                }
-            }
-
-            if (has_support) {
-                b.vx = 0;
-                b.vy = 0;
+            accumulator += frame_dt;
+            while (accumulator >= FIXED_DT) {
+                b2World_Step(worldId, FIXED_DT, SUB_STEPS);
+                accumulator -= FIXED_DT;
             }
         }
-        } // end if (!frozen)
 
         // --- Rendering ---
         SDL_SetRenderDrawColor(renderer, 20, 20, 30, 255);
@@ -399,19 +278,22 @@ int main(int argc, char* argv[]) {
         // Draw walls
         SDL_SetRenderDrawColor(renderer, 180, 180, 180, 255);
         SDL_FRect walls[4] = {
-            {0, 0, (float)WINDOW_W, WALL_THICKNESS},                                      // top
-            {0, WINDOW_H - WALL_THICKNESS, (float)WINDOW_W, WALL_THICKNESS},              // bottom
-            {0, 0, WALL_THICKNESS, (float)WINDOW_H},                                      // left
-            {WINDOW_W - WALL_THICKNESS, 0, WALL_THICKNESS, (float)WINDOW_H}               // right
+            {0, 0, (float)WINDOW_W, WALL_THICKNESS},
+            {0, WINDOW_H - WALL_THICKNESS, (float)WINDOW_W, WALL_THICKNESS},
+            {0, 0, WALL_THICKNESS, (float)WINDOW_H},
+            {WINDOW_W - WALL_THICKNESS, 0, WALL_THICKNESS, (float)WINDOW_H}
         };
         for (auto& w : walls) {
             SDL_RenderFillRect(renderer, &w);
         }
 
         // Draw balls
-        for (auto& b : balls) {
-            SDL_SetRenderDrawColor(renderer, b.r, b.g, b.b, 255);
-            draw_filled_circle(renderer, b.x, b.y, b.radius);
+        for (auto& ball : balls) {
+            b2Vec2 pos = b2Body_GetPosition(ball.bodyId);
+            float px = pos.x * PPM;
+            float py = pos.y * PPM;
+            SDL_SetRenderDrawColor(renderer, ball.r, ball.g, ball.b, 255);
+            draw_filled_circle(renderer, px, py, ball.radius);
         }
 
         SDL_RenderPresent(renderer);
@@ -422,6 +304,7 @@ int main(int argc, char* argv[]) {
         save_scene_csv(save_path, balls);
     }
 
+    b2DestroyWorld(worldId);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

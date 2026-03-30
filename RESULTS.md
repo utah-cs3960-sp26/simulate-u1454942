@@ -246,3 +246,45 @@ The Week 9 prompt was a single natural-language request: add CSV scene loading/s
 3. **Pipeline design from a single prompt**: When the end-to-end workflow is clearly described, Amp can correctly decompose it into separate tools and define their interfaces (CSV format, CLI arguments, file flow).
 
 4. **Human verification still essential for the visual payoff**: The technical pipeline works — CSVs flow correctly through the tools. But whether the final animation is visually satisfying (good ball density, recognizable image, pleasing chaos-to-order transition) can only be judged by watching it.
+
+---
+
+# Week 10 — Box2D Migration
+
+## What Changed
+
+Replaced the entire homemade physics engine (Euler integration, custom impulse solver, spatial grid, sleep system) with **Box2D v3.1.1**. The simulator now uses Box2D for all physics: gravity, collision detection, collision resolution, constraint solving, and body sleeping.
+
+### Architecture
+
+- **Box2D v3 C API** (not the old C++ b2World API)
+- One `b2WorldId` with gravity = (0, 10) m/s² (y-down screen coords)
+- Static body with 4 segment shapes for container walls
+- 1000 dynamic bodies with circle shapes for balls
+- Fixed timestep 1/60s with accumulator loop, 4 sub-steps per step
+- PPM (pixels-per-meter) scale = 50 for coordinate conversion
+- Configurable restitution via `--restitution` CLI flag
+
+### What This Fixed
+
+- **No overlap**: Box2D's constraint solver handles dense packing correctly
+- **No wall phasing**: Segment shapes + continuous collision = no tunneling
+- **No explosion**: Box2D manages velocity clamping and contact resolution
+- **Natural settling**: Bodies sleep automatically when they stop moving
+- **No performance issues**: Box2D handles 1000 circles efficiently without needing manual spatial grids or iteration tuning
+
+### What Was Removed
+
+- Custom Euler integration
+- Custom impulse-based collision resolution
+- Custom position correction
+- Spatial grid broad-phase
+- Support-aware sleep system
+- Velocity clamping
+- All the parameter tuning (solver iterations, damping, sleep thresholds)
+
+All of this is now handled internally by Box2D.
+
+### CSV Pipeline Still Works
+
+The CSV load/save and assign_colors tool were preserved. Ball ordering is maintained through the simulation, so the image-reveal workflow still functions correctly.

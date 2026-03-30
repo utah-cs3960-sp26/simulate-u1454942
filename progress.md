@@ -1,20 +1,24 @@
 # Progress
 
 ## Current Architecture
-- Euler integration with fixed 1/60s timestep
-- Combined impulse + position solver (5 iterations, grid rebuilt each)
-- Support-aware sleep system (sleeping balls skip gravity/integration)
-- Wake-on-impact for sleeping balls
-- Spatial grid collision detection (cell_size = 2 * max_radius)
-- Baumgarte-style position correction with wall clamp per iteration
+- **Box2D v3.1.1** for physics (replaced homemade Euler/impulse solver)
+- SDL3 for rendering and windowing
+- Fixed timestep (1/60s) with accumulator loop
+- 4 Box2D sub-steps per step for stability
+- PPM (pixels-per-meter) = 50 for coordinate conversion
+- Segment shapes for walls, circle shapes for balls
 
 ## Parameters
-- GRAVITY=980, DAMPING=0.96, SLEEP_SPEED=15
-- RESTIT_CUTOFF=5.0, RESTITUTION=0.3 (adjustable)
-- 1000 balls, radius 5-8px
+- Gravity: 10 m/s² downward (Box2D meters)
+- Linear damping: 0.5
+- Ball density: 1.0, friction: 0.3
+- Restitution: 0.3 (configurable via --restitution)
+- 1000 balls, radius 3-5px
+- Settle time: 8000ms (configurable via --settle-time)
 
-## Measurements
-- 5 solver iters + grid rebuild: MAX_PEN ~7.0, 500+ sleeping after 10s
-- More iterations reduce overlap but increase frame time
-- 100 iterations on stale grid: MAX_PEN ~1.0 but slow
-- 150 iterations on stale grid: MAX_PEN ~0.44 (passes <0.5 threshold) but very slow
+## Status
+- Milestones 1-4 complete (build, minimal sim, full container, configurable restitution)
+- CSV load/save working (Milestone 6 complete from previous work)
+- assign_colors tool working (Milestone 7 complete from previous work)
+- Balls fall, collide, bounce, and settle naturally via Box2D
+- No overlap, no wall phasing, no explosion — Box2D handles all constraints
